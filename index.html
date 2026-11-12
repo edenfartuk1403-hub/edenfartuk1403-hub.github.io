@@ -126,7 +126,230 @@ try {
     'https://hswzlcgdcxterzeasfsy.supabase.co',
     'sb_publishable_dr9WQUuxUyOVKuHHitEfAQ_l4ZSBFtJ'
   );
+const account = document.getElementById('accountArea');
 
+const bookingSection = document.createElement('section');
+bookingSection.innerHTML = `
+  <hr>
+  <h2>בקשה חדשה להסעה</h2>
+  <p class="note">
+    יש להגיש לפחות 14 יום מראש.
+    ההזמנה על חשבון תקציב הטייסת וכפופה לאישור.
+    השעות לפי שעון ישראל.
+  </p>
+
+  <form id="bookingForm">
+    <label>לטובת מה ההזמנה?</label>
+    <input name="purpose" required maxlength="300">
+
+    <label>טייסת</label>
+    <select name="squadron_id" required></select>
+
+    <label>שם המזמין</label>
+    <input name="requester_name" required maxlength="100">
+
+    <label>טלפון המזמין</label>
+    <input name="requester_phone" type="tel"
+      required maxlength="30">
+
+    <label>תאריך ושעת התייצבות</label>
+    <input name="departure_at" type="datetime-local" required>
+
+    <label>מקום התייצבות</label>
+    <input name="pickup_location" required maxlength="300">
+
+    <label>מסלול הנסיעה</label>
+    <textarea name="route" required maxlength="2000"></textarea>
+
+    <label>יעד</label>
+    <input name="destination" required maxlength="300">
+
+    <label>תאריך ושעת חזרה</label>
+    <input name="return_at" type="datetime-local" required>
+
+    <label>מספר נוסעים</label>
+    <input name="passenger_count" type="number"
+      min="1" step="1" required>
+
+    <label>סוג רכב</label>
+    <select name="vehicle_type_id" required></select>
+
+    <label>כמות רכבים</label>
+    <input name="vehicle_quantity" type="number"
+      min="1" step="1" value="1" required>
+
+    <p id="priceEstimate" class="note"></p>
+
+    <label>הערות ובקשות מיוחדות</label>
+    <textarea name="notes" maxlength="3000"></textarea>
+
+    <label>
+      <input type="checkbox" required style="width:auto">
+      קראתי: הזמנה לפחות שבועיים מראש,
+      ביטול עד 48 שעות לפני ההתייצבות,
+      והחיוב על חשבון תקציב הטייסת.
+    </label>
+
+    <button id="sendBooking" type="submit" disabled>
+      שליחת בקשה
+    </button>
+    <p id="bookingMessage" role="status"></p>
+  </form>
+`;
+account.appendChild(bookingSection);
+
+const extraStyle = document.createElement('style');
+extraStyle.textContent = `
+  select, textarea {
+    width:100%; padding:14px; font:inherit;
+    border:1px solid #bacbd9; border-radius:10px;
+    background:white; color:#243b53;
+  }
+  textarea { min-height:90px; }
+`;
+document.head.appendChild(extraStyle);
+
+const bookingForm = document.getElementById('bookingForm');
+const fields = bookingForm.elements;
+const bookingMessage = document.getElementById('bookingMessage');
+const sendBooking = document.getElementById('sendBooking');
+let vehicleTypes = [];
+
+function updateEstimate() {
+  const vehicle = vehicleTypes.find(
+    item => item.id === Number(fields.vehicle_type_id.value)
+  );
+  const quantity = Number(fields.vehicle_quantity.value);
+  document.getElementById('priceEstimate').textContent =
+    vehicle && vehicle.estimated_price !== null && quantity > 0
+      ? 'מחיר משוער: ' +
+        (Number(vehicle.estimated_price) * quantity)
+          .toLocaleString('he-IL') +
+        ' ₪. המחיר הסופי כפוף לאישור.'
+      : 'המחיר ייקבע לאחר בדיקת הבקשה; טרם הוגדר תעריף.';
+}
+
+async function loadBookingOptions() {
+  sendBooking.disabled = true;
+  try {
+    const [squadrons, vehicles] = await Promise.all([
+      db.from('squadrons').select('id,name')
+        .eq('active', true).order('id'),
+      db.from('vehicle_types')
+        .select('id,name,estimated_price')
+        .eq('active', true).order('id')
+    ]);
+    if (squadrons.error) throw squadrons.error;
+    if (vehicles.error) throw vehicles.error;
+
+    fields.squadron_id.replaceChildren(
+      new Option('בחרי טייסת', ''),
+      ...squadrons.data.map(item =>
+        new Option(item.name, String(item.id)))
+    );
+    vehicleTypes = vehicles.data;
+    fields.vehicle_type_id.replaceChildren(
+      new Option('בחרי סוג רכב', ''),
+      ...vehicleTypes.map(item =>
+        new Option(item.name, String(item.id)))
+    );
+    updateEstimate();
+    bookingMessage.textContent = '';
+    sendBooking.disabled = false;
+  } catch (error) {
+    bookingMessage.textContent =
+      'טעינת הטופס נכשלה: ' + error.message;
+  }
+}
+
+fields.vehicle_type_id.addEventListener('change', updateEstimate);
+fields.vehicle_quantity.addEventListener('input', updateEstimate);
+
+db.auth.onAuthStateChange((event, session) => {
+  if (session && event !== 'TOKEN_REFRESHED') {
+    setTimeout(loadBookingOptions, 0);
+  }
+});
+
+function israelDate(value) {
+  const [date, time] = value.split('T');
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  const target = Date.UTC(year, month - 1, day, hour, minute);
+  let instant = target;
+
+  for (let i = 0; i < 3; i++) {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jerusalem',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date(instant));
+
+    const p = Object.fromEntries(
+      parts.map(part => [part.type, part.value])
+    );
+    const represented = Date.UTC(
+      Number(p.year), Number(p.month) - 1,
+      Number(p.day), Number(p.hour), Number(p.minute)
+    );
+    instant += target - represented;
+  }
+  return new Date(instant);
+}
+
+bookingForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  sendBooking.disabled = true;
+  bookingMessage.textContent = 'שומר את הבקשה…';
+
+  try {
+    const { data: userData, error: userError } =
+      await db.auth.getUser();
+    if (userError) throw userError;
+    if (!userData.user) throw new Error('יש להתחבר מחדש.');
+
+    const departure = israelDate(fields.departure_at.value);
+    const returning = israelDate(fields.return_at.value);
+
+    if (departure.getTime() < Date.now() + 336 * 3600000) {
+      throw new Error('יש להזמין לפחות 14 יום מראש.');
+    }
+    if (returning < departure) {
+      throw new Error('מועד החזרה חייב להיות לאחר ההתייצבות.');
+    }
+
+    const request = {
+      requester_id: userData.user.id,
+      squadron_id: Number(fields.squadron_id.value),
+      vehicle_type_id: Number(fields.vehicle_type_id.value),
+      passenger_count: Number(fields.passenger_count.value),
+      vehicle_quantity: Number(fields.vehicle_quantity.value),
+      departure_at: departure.toISOString(),
+      return_at: returning.toISOString()
+    };
+
+    for (const name of [
+      'purpose', 'requester_name', 'requester_phone',
+      'pickup_location', 'route', 'destination'
+    ]) {
+      request[name] = fields[name].value.trim();
+      if (!request[name]) throw new Error('יש למלא את כל שדות החובה.');
+    }
+    request.notes = fields.notes.value.trim() || null;
+
+    const { error } = await db.from('bookings').insert(request);
+    if (error) throw error;
+
+    bookingForm.reset();
+    updateEstimate();
+    bookingMessage.textContent =
+      'הבקשה נשמרה בהצלחה! הסטטוס: ממתינה לטיפול.';
+  } catch (error) {
+    bookingMessage.textContent = 'הבקשה לא נשמרה: ' + error.message;
+  } finally {
+    sendBooking.disabled = false;
+  }
+});
   db.auth.onAuthStateChange((event, session) => {
     showSession(session);
   });
